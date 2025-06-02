@@ -187,7 +187,7 @@ pipeline {
                     script {
                         def fullImage = "${env.ECR_REPO_URL}:${params.ENVIRONMENT.toLowerCase()}-${env.BUILD_ID}"
                         def containerName = "classof25-${params.ENVIRONMENT.toLowerCase()}"
-                        // Create .ssh directory in workspace
+                        // Create .ssh directory in workspace!
                         sh "mkdir -p ${env.WORKSPACE}/.ssh"
                         // Generate known_hosts file non-interactively
                         def keyscanStatus = sh(script: """
@@ -228,17 +228,17 @@ pipeline {
             }
         }
     }
-    // post {
-    //     failure {
-    //         echo "Pipeline failed. Please check the logs for details."
-    //     }
-    //     always {
-    //         // Clean up temporary credentials
-    //         script {
-    //             env.AWS_ACCESS_KEY_ID = ''
-    //             env.AWS_SECRET_ACCESS_KEY = ''
-    //             env.AWS_SESSION_TOKEN = ''
-    //         }
-    //     }
-    // }
+    post {
+        failure {
+            echo "Pipeline failed. Please check the logs for details."
+        }
+        always {
+            // Clean up temporary credentials
+            script {
+                env.AWS_ACCESS_KEY_ID = ''
+                env.AWS_SECRET_ACCESS_KEY = ''
+                env.AWS_SESSION_TOKEN = ''
+            }
+        }
+    }
 }
