@@ -196,7 +196,7 @@ pipeline {
                         if (keyscanStatus != 0) {
                             error "Failed to fetch EC2 host key for ${env.EC2_IP}. Ensure the instance is reachable and SSH is enabled."
                         }
-                        // Write SSH commands to a script!
+                        // Write SSH commands to a script
                         writeFile file: 'deploy.sh', text: """
                             #!/bin/bash
                             set -e
