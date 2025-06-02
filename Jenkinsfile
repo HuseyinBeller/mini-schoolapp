@@ -139,43 +139,43 @@ pipeline {
                 }
             }
         }
-        // stage('Validate EC2 Instance') {
-        //     steps {
-        //         script {
-        //             // Check instance accessibility
-        //             def instanceStatus = sh(script: """
-        //                 aws ec2 describe-instances \
-        //                     --region ${params.AWS_REGION} \
-        //                     --instance-ids ${params.EC2_INSTANCE_ID} \
-        //                     --query 'Reservations[0].Instances[0].State.Name' \
-        //                     --output text
-        //             """, returnStdout: true, returnStatus: true)
-        //             if (instanceStatus != 0) {
-        //                 error "EC2 instance ${params.EC2_INSTANCE_ID} does not exist or is not accessible."
-        //             }
-        //             // Get instance details
-        //             def instanceOutput = sh(script: """
-        //                 aws ec2 describe-instances \
-        //                     --region ${params.AWS_REGION} \
-        //                     --instance-ids ${params.EC2_INSTANCE_ID} \
-        //                     --output json
-        //             """, returnStdout: true).trim()
-        //             def instanceJson = readJSON text: instanceOutput
-        //             if (!instanceJson.Reservations || instanceJson.Reservations.size() == 0 || !instanceJson.Reservations[0].Instances || instanceJson.Reservations[0].Instances.size() == 0) {
-        //                 error "EC2 instance ${params.EC2_INSTANCE_ID} not found."
-        //             }
-        //             def state = instanceJson.Reservations[0].Instances[0].State.Name
-        //             if (state != 'running') {
-        //                 error "EC2 instance ${params.EC2_INSTANCE_ID} is not in 'running' state. Current state: ${state}"
-        //             }
-        //             env.EC2_IP = instanceJson.Reservations[0].Instances[0].PublicIpAddress ?: instanceJson.Reservations[0].Instances[0].PrivateIpAddress
-        //             if (!env.EC2_IP) {
-        //                 error "Could not retrieve IP address for EC2 instance ${params.EC2_INSTANCE_ID}."
-        //             }
-        //             echo "EC2 instance ${params.EC2_INSTANCE_ID} is running with IP address ${env.EC2_IP}."
-        //         }
-        //     }
-        // }
+        stage('Validate EC2 Instance') {
+            steps {
+                script {
+                    // Check instance accessibility
+                    def instanceStatus = sh(script: """
+                        aws ec2 describe-instances \
+                            --region ${params.AWS_REGION} \
+                            --instance-ids ${params.EC2_INSTANCE_ID} \
+                            --query 'Reservations[0].Instances[0].State.Name' \
+                            --output text
+                    """, returnStdout: true, returnStatus: true)
+                    if (instanceStatus != 0) {
+                        error "EC2 instance ${params.EC2_INSTANCE_ID} does not exist or is not accessible."
+                    }
+                    // Get instance details
+                    def instanceOutput = sh(script: """
+                        aws ec2 describe-instances \
+                            --region ${params.AWS_REGION} \
+                            --instance-ids ${params.EC2_INSTANCE_ID} \
+                            --output json
+                    """, returnStdout: true).trim()
+                    def instanceJson = readJSON text: instanceOutput
+                    if (!instanceJson.Reservations || instanceJson.Reservations.size() == 0 || !instanceJson.Reservations[0].Instances || instanceJson.Reservations[0].Instances.size() == 0) {
+                        error "EC2 instance ${params.EC2_INSTANCE_ID} not found."
+                    }
+                    def state = instanceJson.Reservations[0].Instances[0].State.Name
+                    if (state != 'running') {
+                        error "EC2 instance ${params.EC2_INSTANCE_ID} is not in 'running' state. Current state: ${state}"
+                    }
+                    env.EC2_IP = instanceJson.Reservations[0].Instances[0].PublicIpAddress ?: instanceJson.Reservations[0].Instances[0].PrivateIpAddress
+                    if (!env.EC2_IP) {
+                        error "Could not retrieve IP address for EC2 instance ${params.EC2_INSTANCE_ID}."
+                    }
+                    echo "EC2 instance ${params.EC2_INSTANCE_ID} is running with IP address ${env.EC2_IP}."
+                }
+            }
+        }
     
         // stage('Deploy to EC2') {
         //     steps {

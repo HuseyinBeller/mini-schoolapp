@@ -1,0 +1,698 @@
+pipeline {
+    agent { label 'docker-node' } // Node with Docker and AWS CLI
+    
+    environment {
+        // Global environment variables
+        DOCKER_BUILDKIT = '1'
+        BUILDX_NO_DEFAULT_ATTESTATIONS = '1'
+        SLACK_CHANNEL = '#deployments'
+        APP_NAME = 'classof25-mini-schoolapp'
+    }
+    
+    parameters {
+        choice(name: 'ENVIRONMENT', choices: ['DEV', 'STAGING', 'PROD'], description: 'Target environment')
+        choice(name: 'ACTION', choices: ['DEPLOY', 'ROLLBACK'], description: 'Action to perform')
+        string(name: 'ROLLBACK_TAG', defaultValue: '', description: 'Image tag to rollback to (only for ROLLBACK action)')
+        string(name: 'AWS_ACCOUNT_ID', defaultValue: '203918847014', description: 'Target AWS Account ID')
+        string(name: 'ROLE_NAME', defaultValue: 'Classof25-STS-Role', description: 'IAM Role to assume in target account')
+        string(name: 'AWS_REGION', defaultValue: 'eu-central-1', description: 'AWS Region')
+        string(name: 'ECR_REPO_NAME', defaultValue: 'classof25repo', description: 'Base ECR repository name')
+        string(name: 'EC2_INSTANCE_ID', defaultValue: 'i-00aff71e18be5c3d2', description: 'EC2 Instance ID')
+        string(name: 'EC2_SSH_USER', defaultValue: 'ubuntu', description: 'SSH user for EC2 instance')
+        string(name: 'HOST_PORT', defaultValue: '80', description: 'Host port for the Docker container')
+        booleanParam(name: 'SKIP_TESTS', defaultValue: false, description: 'Skip running tests')
+        booleanParam(name: 'SKIP_SECURITY_SCAN', defaultValue: false, description: 'Skip security vulnerability scanning')
+        booleanParam(name: 'ENABLE_BLUE_GREEN', defaultValue: false, description: 'Enable blue-green deployment')
+        string(name: 'HEALTH_CHECK_ENDPOINT', defaultValue: '/health', description: 'Health check endpoint')
+        string(name: 'HEALTH_CHECK_TIMEOUT', defaultValue: '300', description: 'Health check timeout in seconds')
+    }
+    
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timeout(time: 60, unit: 'MINUTES')
+        timestamps()
+        disableConcurrentBuilds()
+        skipDefaultCheckout()
+    }
+    
+    stages {
+        stage('Checkout & Validate') {
+            parallel {
+                stage('Code Checkout') {
+                    steps {
+                        checkout scm
+                        script {
+                            env.GIT_COMMIT_SHORT = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim()
+                            env.GIT_BRANCH = sh(script: "git rev-parse --abbrev-ref HEAD", returnStdout: true).trim()
+                            env.BUILD_TIMESTAMP = sh(script: "date -u +%Y%m%d%H%M%S", returnStdout: true).trim()
+                        }
+                    }
+                }
+                
+                stage('Validate Input') {
+                    steps {
+                        script {
+                            // Enhanced validation with better error messages
+                            def validationErrors = []
+                            
+                            if (!params.ENVIRONMENT || !['DEV', 'STAGING', 'PROD'].contains(params.ENVIRONMENT)) {
+                                validationErrors.add("Invalid ENVIRONMENT. Must be DEV, STAGING, or PROD.")
+                            }
+                            
+                            if (params.ACTION == 'ROLLBACK' && !params.ROLLBACK_TAG) {
+                                validationErrors.add("ROLLBACK_TAG is required when ACTION is ROLLBACK.")
+                            }
+                            
+                            if (!params.AWS_ACCOUNT_ID || params.AWS_ACCOUNT_ID ==~ /[^0-9]/ || params.AWS_ACCOUNT_ID.length() != 12) {
+                                validationErrors.add("Invalid AWS_ACCOUNT_ID. Must be a 12-digit number.")
+                            }
+                            
+                            if (!params.AWS_REGION || !params.AWS_REGION.matches(/^[a-z0-9-]+$/)) {
+                                validationErrors.add("Invalid AWS_REGION format.")
+                            }
+                            
+                            if (!params.HOST_PORT || params.HOST_PORT ==~ /[^0-9]/ || params.HOST_PORT.toInteger() < 1 || params.HOST_PORT.toInteger() > 65535) {
+                                validationErrors.add("Invalid HOST_PORT. Must be a number between 1 and 65535.")
+                            }
+                            
+                            if (!params.HEALTH_CHECK_TIMEOUT || params.HEALTH_CHECK_TIMEOUT ==~ /[^0-9]/ || params.HEALTH_CHECK_TIMEOUT.toInteger() < 30) {
+                                validationErrors.add("Invalid HEALTH_CHECK_TIMEOUT. Must be at least 30 seconds.")
+                            }
+                            
+                            if (validationErrors.size() > 0) {
+                                error "Validation failed:\n" + validationErrors.join("\n")
+                            }
+                            
+                            // Set environment-specific variables
+                            env.ENVIRONMENT_LOWER = params.ENVIRONMENT.toLowerCase()
+                            env.IMAGE_TAG = "${env.ENVIRONMENT_LOWER}-${env.BUILD_TIMESTAMP}-${env.GIT_COMMIT_SHORT}"
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Pre-Flight Checks') {
+            steps {
+                script {
+                    // Check if Dockerfile exists
+                    if (!fileExists('Dockerfile')) {
+                        error "Dockerfile not found in the repository root."
+                    }
+                    
+                    // Check for package.json or requirements.txt
+                    def hasPackageJson = fileExists('package.json')
+                    def hasRequirementsTxt = fileExists('requirements.txt')
+                    def hasDockerCompose = fileExists('docker-compose.yml') || fileExists('docker-compose.yaml')
+                    
+                    echo "Project structure detected:"
+                    echo "- package.json: ${hasPackageJson}"
+                    echo "- requirements.txt: ${hasRequirementsTxt}"
+                    echo "- docker-compose: ${hasDockerCompose}"
+                    
+                    env.HAS_PACKAGE_JSON = hasPackageJson.toString()
+                    env.HAS_REQUIREMENTS_TXT = hasRequirementsTxt.toString()
+                }
+            }
+        }
+        
+        stage('Assume AWS Role') {
+            steps {
+                withCredentials([[
+                    $class: 'AmazonWebServicesCredentialsBinding',
+                    credentialsId: 'classof25-sts-user',
+                    accessKeyVariable: 'AWS_ACCESS_KEY_ID',
+                    secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
+                ]]) {
+                    script {
+                        def roleArn = "arn:aws:iam::${params.AWS_ACCOUNT_ID}:role/${params.ROLE_NAME}"
+                        def sessionName = "Jenkins-${env.APP_NAME}-${env.BUILD_ID}"
+                        
+                        echo "Assuming role: ${roleArn}"
+                        def stsOutput = sh(script: """
+                            aws sts assume-role \
+                                --role-arn ${roleArn} \
+                                --role-session-name ${sessionName} \
+                                --duration-seconds 3600 \
+                                --output json
+                        """, returnStdout: true).trim()
+                        
+                        def stsJson = readJSON text: stsOutput
+                        env.AWS_ACCESS_KEY_ID = stsJson.Credentials.AccessKeyId
+                        env.AWS_SECRET_ACCESS_KEY = stsJson.Credentials.SecretAccessKey
+                        env.AWS_SESSION_TOKEN = stsJson.Credentials.SessionToken
+                        
+                        // Verify the assumed role
+                        def callerIdentity = sh(script: "aws sts get-caller-identity --output json", returnStdout: true).trim()
+                        def identity = readJSON text: callerIdentity
+                        echo "Successfully assumed role. Current identity: ${identity.Arn}"
+                        
+                        env.ASSUMED_ROLE_ARN = identity.Arn
+                    }
+                }
+            }
+        }
+        
+        stage('Setup Infrastructure') {
+            parallel {
+                stage('ECR Repository') {
+                    steps {
+                        script {
+                            def repoName = "${params.ECR_REPO_NAME}-${env.ENVIRONMENT_LOWER}"
+                            env.ECR_REPO_URL = "${params.AWS_ACCOUNT_ID}.dkr.ecr.${params.AWS_REGION}.amazonaws.com/${repoName}"
+                            
+                            // Check if repository exists and create if needed
+                            def repoOutput = sh(script: """
+                                aws ecr describe-repositories \
+                                    --region ${params.AWS_REGION} \
+                                    --repository-names ${repoName} \
+                                    --output json 2>/dev/null || echo '{}'
+                            """, returnStdout: true).trim()
+                            
+                            def repoJson = readJSON text: repoOutput
+                            if (!repoJson.repositories || repoJson.repositories.size() == 0) {
+                                echo "Creating ECR repository: ${repoName}"
+                                sh """
+                                    aws ecr create-repository \
+                                        --region ${params.AWS_REGION} \
+                                        --repository-name ${repoName} \
+                                        --image-scanning-configuration scanOnPush=true \
+                                        --output json
+                                """
+                                
+                                // Set lifecycle policy to manage image retention
+                                def lifecyclePolicy = '''
+                                {
+                                    "rules": [
+                                        {
+                                            "rulePriority": 1,
+                                            "description": "Keep last 10 production images",
+                                            "selection": {
+                                                "tagStatus": "tagged",
+                                                "tagPrefixList": ["prod"],
+                                                "countType": "imageCountMoreThan",
+                                                "countNumber": 10
+                                            },
+                                            "action": {
+                                                "type": "expire"
+                                            }
+                                        },
+                                        {
+                                            "rulePriority": 2,
+                                            "description": "Keep last 5 staging/dev images",
+                                            "selection": {
+                                                "tagStatus": "tagged",
+                                                "tagPrefixList": ["staging", "dev"],
+                                                "countType": "imageCountMoreThan",
+                                                "countNumber": 5
+                                            },
+                                            "action": {
+                                                "type": "expire"
+                                            }
+                                        }
+                                    ]
+                                }
+                                '''
+                                
+                                writeFile file: 'lifecycle-policy.json', text: lifecyclePolicy
+                                sh """
+                                    aws ecr put-lifecycle-policy \
+                                        --region ${params.AWS_REGION} \
+                                        --repository-name ${repoName} \
+                                        --lifecycle-policy-text file://lifecycle-policy.json
+                                """
+                            } else {
+                                echo "ECR repository ${repoName} already exists"
+                            }
+                        }
+                    }
+                }
+                
+                stage('Validate EC2 Instance') {
+                    when {
+                        expression { params.ACTION == 'DEPLOY' }
+                    }
+                    steps {
+                        script {
+                            // Enhanced EC2 validation with health checks
+                            def instanceOutput = sh(script: """
+                                aws ec2 describe-instances \
+                                    --region ${params.AWS_REGION} \
+                                    --instance-ids ${params.EC2_INSTANCE_ID} \
+                                    --output json
+                            """, returnStdout: true).trim()
+                            
+                            def instanceJson = readJSON text: instanceOutput
+                            def instance = instanceJson.Reservations[0].Instances[0]
+                            def state = instance.State.Name
+                            
+                            if (state != 'running') {
+                                error "EC2 instance ${params.EC2_INSTANCE_ID} is not running. Current state: ${state}"
+                            }
+                            
+                            env.EC2_IP = instance.PublicIpAddress ?: instance.PrivateIpAddress
+                            env.EC2_PRIVATE_IP = instance.PrivateIpAddress
+                            env.EC2_AZ = instance.Placement.AvailabilityZone
+                            
+                            echo "EC2 Instance Details:"
+                            echo "- Instance ID: ${params.EC2_INSTANCE_ID}"
+                            echo "- State: ${state}"
+                            echo "- Public IP: ${instance.PublicIpAddress ?: 'N/A'}"
+                            echo "- Private IP: ${instance.PrivateIpAddress}"
+                            echo "- Availability Zone: ${env.EC2_AZ}"
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Test & Quality Checks') {
+            when {
+                allOf {
+                    expression { params.ACTION == 'DEPLOY' }
+                    not { params.SKIP_TESTS }
+                }
+            }
+            parallel {
+                stage('Unit Tests') {
+                    when {
+                        expression { env.HAS_PACKAGE_JSON == 'true' }
+                    }
+                    steps {
+                        script {
+                            // Run npm tests if package.json exists
+                            sh """
+                                npm ci
+                                npm test || true
+                            """
+                            
+                            // Publish test results if they exist
+                            if (fileExists('test-results.xml')) {
+                                publishTestResults testResultsPattern: 'test-results.xml'
+                            }
+                            if (fileExists('coverage/lcov.info')) {
+                                publishCoverage adapters: [lcovAdapter('coverage/lcov.info')]
+                            }
+                        }
+                    }
+                }
+                
+                stage('Dockerfile Linting') {
+                    steps {
+                        script {
+                            // Use hadolint to lint Dockerfile
+                            sh """
+                                docker run --rm -i hadolint/hadolint < Dockerfile || true
+                            """
+                        }
+                    }
+                }
+                
+                stage('Code Quality') {
+                    steps {
+                        script {
+                            // SonarQube analysis if configured
+                            if (env.SONAR_HOST_URL) {
+                                withSonarQubeEnv('SonarQube') {
+                                    sh """
+                                        sonar-scanner \
+                                            -Dsonar.projectKey=${env.APP_NAME} \
+                                            -Dsonar.sources=. \
+                                            -Dsonar.host.url=${env.SONAR_HOST_URL}
+                                    """
+                                }
+                            } else {
+                                echo "SonarQube not configured, skipping code quality analysis"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Build & Security Scan') {
+            when {
+                expression { params.ACTION == 'DEPLOY' }
+            }
+            steps {
+                script {
+                    if (params.ACTION == 'ROLLBACK') {
+                        echo "Skipping build for rollback action"
+                        env.FULL_IMAGE_URL = "${env.ECR_REPO_URL}:${params.ROLLBACK_TAG}"
+                        return
+                    }
+                    
+                    env.FULL_IMAGE_URL = "${env.ECR_REPO_URL}:${env.IMAGE_TAG}"
+                    
+                    // Multi-stage build with build args
+                    sh """
+                        docker build \
+                            --build-arg BUILD_DATE=\$(date -u +"%Y-%m-%dT%H:%M:%SZ") \
+                            --build-arg VCS_REF=${env.GIT_COMMIT_SHORT} \
+                            --build-arg VERSION=${env.IMAGE_TAG} \
+                            --tag ${env.APP_NAME}:${env.IMAGE_TAG} \
+                            --tag ${env.APP_NAME}:latest \
+                            .
+                    """
+                    
+                    // Security scanning with Trivy
+                    if (!params.SKIP_SECURITY_SCAN) {
+                        echo "Running security vulnerability scan..."
+                        sh """
+                            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+                                -v \$(pwd):/tmp/.cache/ \
+                                aquasec/trivy:latest image \
+                                --format json \
+                                --output /tmp/.cache/trivy-report.json \
+                                --severity HIGH,CRITICAL \
+                                ${env.APP_NAME}:${env.IMAGE_TAG} || true
+                        """
+                        
+                        if (fileExists('trivy-report.json')) {
+                            def trivyReport = readJSON file: 'trivy-report.json'
+                            if (trivyReport.Results && trivyReport.Results.any { it.Vulnerabilities?.size() > 0 }) {
+                                echo "⚠️  Security vulnerabilities found. Check trivy-report.json for details."
+                                // Don't fail the build but warn about vulnerabilities
+                            }
+                            archiveArtifacts artifacts: 'trivy-report.json', allowEmptyArchive: true
+                        }
+                    }
+                    
+                    // Push to ECR
+                    sh """
+                        aws ecr get-login-password --region ${params.AWS_REGION} | \
+                            docker login --username AWS --password-stdin ${params.AWS_ACCOUNT_ID}.dkr.ecr.${params.AWS_REGION}.amazonaws.com
+                        
+                        docker tag ${env.APP_NAME}:${env.IMAGE_TAG} ${env.FULL_IMAGE_URL}
+                        docker push ${env.FULL_IMAGE_URL}
+                        
+                        # Also tag as latest for the environment
+                        docker tag ${env.APP_NAME}:${env.IMAGE_TAG} ${env.ECR_REPO_URL}:${env.ENVIRONMENT_LOWER}-latest
+                        docker push ${env.ECR_REPO_URL}:${env.ENVIRONMENT_LOWER}-latest
+                    """
+                    
+                    echo "✅ Image built and pushed: ${env.FULL_IMAGE_URL}"
+                }
+            }
+        }
+        
+        stage('Deploy Application') {
+            steps {
+                withCredentials([sshUserPrivateKey(
+                    credentialsId: 'docker-server-key',
+                    keyFileVariable: 'SSH_KEY',
+                    usernameVariable: 'SSH_USERNAME'
+                )]) {
+                    script {
+                        def containerName = "${env.APP_NAME}-${env.ENVIRONMENT_LOWER}"
+                        def backupContainerName = "${containerName}-backup"
+                        
+                        // Create deployment script with enhanced error handling
+                        def deployScript = """
+#!/bin/bash
+set -euo pipefail
+
+# Colors for output
+RED='\\033[0;31m'
+GREEN='\\033[0;32m'
+YELLOW='\\033[1;33m'
+NC='\\033[0m' # No Color
+
+echo -e "\${GREEN}Starting deployment of ${env.FULL_IMAGE_URL}\${NC}"
+
+# Authenticate to ECR
+echo -e "\${YELLOW}Authenticating to ECR...\${NC}"
+aws ecr get-login-password --region ${params.AWS_REGION} | \
+    docker login --username AWS --password-stdin ${params.AWS_ACCOUNT_ID}.dkr.ecr.${params.AWS_REGION}.amazonaws.com
+
+# Health check function
+health_check() {
+    local container_name=\$1
+    local max_attempts=\$2
+    local attempt=1
+    
+    echo -e "\${YELLOW}Performing health check on \$container_name...\${NC}"
+    while [ \$attempt -le \$max_attempts ]; do
+        if docker exec \$container_name curl -f http://localhost:80${params.HEALTH_CHECK_ENDPOINT} >/dev/null 2>&1; then
+            echo -e "\${GREEN}Health check passed!\${NC}"
+            return 0
+        fi
+        echo "Attempt \$attempt/\$max_attempts failed, waiting 10 seconds..."
+        sleep 10
+        ((attempt++))
+    done
+    echo -e "\${RED}Health check failed after \$max_attempts attempts\${NC}"
+    return 1
+}
+
+# Blue-Green deployment logic
+if [ "${params.ENABLE_BLUE_GREEN}" = "true" ]; then
+    echo -e "\${YELLOW}Blue-Green deployment enabled\${NC}"
+    
+    # Check if current container exists and create backup
+    if docker ps -q -f name=${containerName} | grep -q .; then
+        echo -e "\${YELLOW}Creating backup of current container...\${NC}"
+        docker stop ${containerName} || true
+        docker rename ${containerName} ${backupContainerName} || true
+    fi
+    
+    # Deploy new version
+    echo -e "\${YELLOW}Deploying new version...\${NC}"
+    docker pull ${env.FULL_IMAGE_URL}
+    docker run -d --name ${containerName} \
+        -p ${params.HOST_PORT}:80 \
+        --restart unless-stopped \
+        --label "environment=${env.ENVIRONMENT_LOWER}" \
+        --label "version=${env.IMAGE_TAG}" \
+        --label "build-id=${env.BUILD_ID}" \
+        ${env.FULL_IMAGE_URL}
+    
+    # Wait for container to be ready
+    sleep 30
+    
+    # Perform health check
+    if health_check ${containerName} ${params.HEALTH_CHECK_TIMEOUT.toInteger() / 10}; then
+        echo -e "\${GREEN}Deployment successful, cleaning up backup...\${NC}"
+        docker rm ${backupContainerName} || true
+    else
+        echo -e "\${RED}Deployment failed, rolling back...\${NC}"
+        docker stop ${containerName} || true
+        docker rm ${containerName} || true
+        if docker ps -a -q -f name=${backupContainerName} | grep -q .; then
+            docker rename ${backupContainerName} ${containerName}
+            docker start ${containerName}
+            echo -e "\${GREEN}Rollback completed\${NC}"
+        fi
+        exit 1
+    fi
+else
+    # Standard deployment
+    echo -e "\${YELLOW}Standard deployment\${NC}"
+    
+    # Pull new image
+    docker pull ${env.FULL_IMAGE_URL}
+    
+    # Stop and remove existing container
+    docker stop ${containerName} || true
+    docker rm ${containerName} || true
+    
+    # Start new container
+    docker run -d --name ${containerName} \
+        -p ${params.HOST_PORT}:80 \
+        --restart unless-stopped \
+        --label "environment=${env.ENVIRONMENT_LOWER}" \
+        --label "version=${env.IMAGE_TAG}" \
+        --label "build-id=${env.BUILD_ID}" \
+        ${env.FULL_IMAGE_URL}
+    
+    # Wait and health check
+    sleep 30
+    if ! health_check ${containerName} ${params.HEALTH_CHECK_TIMEOUT.toInteger() / 10}; then
+        echo -e "\${RED}Deployment failed health check\${NC}"
+        exit 1
+    fi
+fi
+
+# Cleanup old images (keep last 3)
+echo -e "\${YELLOW}Cleaning up old images...\${NC}"
+docker images ${env.ECR_REPO_URL} --format '{{.Tag}}' | \
+    grep -E '^${env.ENVIRONMENT_LOWER}-.*' | \
+    sort -r | \
+    tail -n +4 | \
+    xargs -I {} docker rmi ${env.ECR_REPO_URL}:{} || true
+
+# System cleanup
+docker system prune -f || true
+
+echo -e "\${GREEN}Deployment completed successfully!\${NC}"
+echo "Container: ${containerName}"
+echo "Image: ${env.FULL_IMAGE_URL}"
+echo "Port: ${params.HOST_PORT}"
+"""
+                        
+                        // Setup SSH and deploy
+                        sh "mkdir -p \${WORKSPACE}/.ssh"
+                        sh "ssh-keyscan -H ${env.EC2_IP} >> \${WORKSPACE}/.ssh/known_hosts"
+                        
+                        writeFile file: 'deploy.sh', text: deployScript
+                        
+                        sh """
+                            chmod 600 \$SSH_KEY
+                            chmod +x deploy.sh
+                            scp -i \$SSH_KEY -o UserKnownHostsFile=\${WORKSPACE}/.ssh/known_hosts deploy.sh ${params.EC2_SSH_USER}@${env.EC2_IP}:~/deploy.sh
+                            ssh -i \$SSH_KEY -o UserKnownHostsFile=\${WORKSPACE}/.ssh/known_hosts ${params.EC2_SSH_USER}@${env.EC2_IP} 'chmod +x ~/deploy.sh && ~/deploy.sh'
+                            rm -rf \${WORKSPACE}/.ssh
+                        """
+                    }
+                }
+            }
+        }
+        
+        stage('Post-Deployment Verification') {
+            steps {
+                script {
+                    // Wait a bit more and do final verification
+                    sleep 15
+                    
+                    // Test application endpoint
+                    def healthUrl = "http://${env.EC2_IP}:${params.HOST_PORT}${params.HEALTH_CHECK_ENDPOINT}"
+                    def maxAttempts = 5
+                    def attempt = 1
+                    def success = false
+                    
+                    while (attempt <= maxAttempts && !success) {
+                        try {
+                            def response = sh(script: "curl -f -s -o /dev/null -w '%{http_code}' ${healthUrl}", returnStdout: true).trim()
+                            if (response == '200') {
+                                success = true
+                                echo "✅ Application is responding correctly at ${healthUrl}"
+                            } else {
+                                echo "⚠️  Health check returned HTTP ${response}"
+                            }
+                        } catch (Exception e) {
+                            echo "⚠️  Health check attempt ${attempt}/${maxAttempts} failed: ${e.getMessage()}"
+                        }
+                        
+                        if (!success && attempt < maxAttempts) {
+                            sleep 10
+                            attempt++
+                        }
+                    }
+                    
+                    if (!success) {
+                        error "Application health check failed after ${maxAttempts} attempts"
+                    }
+                    
+                    // Store deployment metadata
+                    def deploymentInfo = [
+                        environment: params.ENVIRONMENT,
+                        image: env.FULL_IMAGE_URL,
+                        buildId: env.BUILD_ID,
+                        gitCommit: env.GIT_COMMIT_SHORT,
+                        deployedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss'Z'"),
+                        deployedBy: env.BUILD_USER ?: 'jenkins',
+                        ec2Instance: params.EC2_INSTANCE_ID,
+                        healthCheckUrl: healthUrl
+                    ]
+                    
+                    writeJSON file: 'deployment-info.json', json: deploymentInfo
+                    archiveArtifacts artifacts: 'deployment-info.json', allowEmptyArchive: true
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            script {
+                // Clean up credentials
+                env.AWS_ACCESS_KEY_ID = ''
+                env.AWS_SECRET_ACCESS_KEY = ''
+                env.AWS_SESSION_TOKEN = ''
+                
+                // Clean up Docker images locally
+                sh "docker system prune -f || true"
+                
+                // Archive logs
+                sh "docker logs \$(docker ps -q -f name=${env.APP_NAME}-${env.ENVIRONMENT_LOWER}) > deployment.log 2>&1 || true"
+                archiveArtifacts artifacts: 'deployment.log', allowEmptyArchive: true
+            }
+        }
+        
+        success {
+            script {
+                def deploymentMessage = """
+🚀 *Deployment Successful!*
+*Environment:* ${params.ENVIRONMENT}
+*Application:* ${env.APP_NAME}
+*Version:* ${env.IMAGE_TAG ?: params.ROLLBACK_TAG}
+*Build:* #${env.BUILD_ID}
+*Duration:* ${currentBuild.durationString}
+*EC2 Instance:* ${params.EC2_INSTANCE_ID}
+*URL:* http://${env.EC2_IP}:${params.HOST_PORT}
+*Health Check:* http://${env.EC2_IP}:${params.HOST_PORT}${params.HEALTH_CHECK_ENDPOINT}
+*Deployed by:* ${env.BUILD_USER ?: 'Jenkins'}
+"""
+                
+                // Send Slack notification if configured
+                if (env.SLACK_TOKEN) {
+                    slackSend(
+                        channel: env.SLACK_CHANNEL,
+                        color: 'good',
+                        message: deploymentMessage,
+                        teamDomain: 'your-team',
+                        token: env.SLACK_TOKEN
+                    )
+                }
+                
+                echo "✅ Deployment completed successfully!"
+                echo deploymentMessage
+            }
+        }
+        
+        failure {
+            script {
+                def failureMessage = """
+❌ *Deployment Failed!*
+*Environment:* ${params.ENVIRONMENT}
+*Application:* ${env.APP_NAME}
+*Build:* #${env.BUILD_ID}
+*Duration:* ${currentBuild.durationString}
+*Error:* Pipeline failed during execution
+*Logs:* ${env.BUILD_URL}console
+*Action Required:* Check logs and retry deployment
+"""
+                
+                // Send Slack notification if configured
+                if (env.SLACK_TOKEN) {
+                    slackSend(
+                        channel: env.SLACK_CHANNEL,
+                        color: 'danger',
+                        message: failureMessage,
+                        teamDomain: 'your-team',
+                        token: env.SLACK_TOKEN
+                    )
+                }
+                
+                echo "❌ Pipeline failed. Check logs for details."
+                echo failureMessage
+                
+                // Attempt to collect failure artifacts
+                sh """
+                    echo "=== DOCKER CONTAINERS ===" > failure-debug.log
+                    docker ps -a >> failure-debug.log 2>&1 || true
+                    echo "=== DOCKER IMAGES ===" >> failure-debug.log
+                    docker images >> failure-debug.log 2>&1 || true
+                    echo "=== SYSTEM RESOURCES ===" >> failure-debug.log
+                    df -h >> failure-debug.log 2>&1 || true
+                    free -h >> failure-debug.log 2>&1 || true
+                """
+                archiveArtifacts artifacts: 'failure-debug.log', allowEmptyArchive: true
+            }
+        }
+        
+        unstable {
+            echo "⚠️  Pipeline completed with warnings. Please review the logs."
+        }
+    }
+} 
