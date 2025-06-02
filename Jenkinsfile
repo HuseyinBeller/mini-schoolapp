@@ -44,7 +44,7 @@ pipeline {
         stage('stsInitial') {
             steps {
                 script {
-                    // Initialize AWS CLI with default region
+                    // Initialize AWS CLI with default regionn
                     sh "aws sts get-caller-identity --output json"
                 }
             }
