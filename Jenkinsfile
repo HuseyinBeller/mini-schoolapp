@@ -2,11 +2,11 @@ pipeline {
     agent { label 'docker-node' } // Node with Docker and AWS CLI
     parameters {
         choice(name: 'ENVIRONMENT', choices: ['DEV', 'STAGING', 'PROD'], description: 'Target environment')
-        string(name: 'AWS_ACCOUNT_ID', defaultValue: '392102158411', description: 'Target AWS Account ID')
+        string(name: 'AWS_ACCOUNT_ID', defaultValue: '203918847014', description: 'Target AWS Account ID')
         string(name: 'ROLE_NAME', defaultValue: 'Classof25-STS-Role', description: 'IAM Role to assume in target account')
-        string(name: 'AWS_REGION', defaultValue: 'us-east-1', description: 'AWS Region')
+        string(name: 'AWS_REGION', defaultValue: 'eu-central-1', description: 'AWS Region')
         string(name: 'ECR_REPO_NAME', defaultValue: 'classof25repo', description: 'Base ECR repository name')
-        string(name: 'EC2_INSTANCE_ID', defaultValue: 'i-0fa1266b4dc575aa7', description: 'EC2 Instance ID')
+        string(name: 'EC2_INSTANCE_ID', defaultValue: 'i-00aff71e18be5c3d2', description: 'EC2 Instance ID')
         string(name: 'EC2_SSH_USER', defaultValue: 'ubuntu', description: 'SSH user for EC2 instance')
         string(name: 'HOST_PORT', defaultValue: '80', description: 'Host port for the Docker container')
     }
