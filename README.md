@@ -1,6 +1,6 @@
 # School Application Form Project
 
-## Overview
+### Overview
 
 This project is a full-stack web application designed to allow users to register for school programs. The application consists of a frontend hosted on AWS S3 and CloudFront, and a backend deployed on AWS Elastic Beanstalk (EB) with an RDS MySQL database. The backend integrates with AWS Secrets Manager and Parameter Store for secure credential management. Users can submit their name, email, phone number, and program of interest through a form, and the data is stored in the database. The application includes validation, error handling, and a user-friendly frontend experience.
 
