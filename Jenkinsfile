@@ -41,14 +41,14 @@ pipeline {
                 }
             }
         }
-        // stage('stsInitial') {
-        //     steps {
-        //         script {
-        //             // Initialize AWS CLI with default region
-        //             sh "aws sts get-caller-identity --output json"
-        //         }
-        //     }
-        // }
+        stage('stsInitial') {
+            steps {
+                script {
+                    // Initialize AWS CLI with default region
+                    sh "aws sts get-caller-identity --output json"
+                }
+            }
+        }
         stage('Assume Role') {
             steps {
                 withCredentials([[
