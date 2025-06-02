@@ -215,7 +215,7 @@ pipeline {
                             # Prune unused containers
                             docker system prune -f || true
                         """
-                        // Copy and execute script on EC2
+                        // Copy and execute script on EC2.
                         sh """
                             chmod 600 \$SSH_KEY
                             scp -i \$SSH_KEY -o UserKnownHostsFile=${env.WORKSPACE}/.ssh/known_hosts deploy.sh ${params.EC2_SSH_USER}@${env.EC2_IP}:~/deploy.sh
