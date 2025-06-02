@@ -177,56 +177,56 @@ pipeline {
             }
         }
     
-        // stage('Deploy to EC2') {
-        //     steps {
-        //         withCredentials([sshUserPrivateKey(
-        //             credentialsId: 'docker-server-key',
-        //             keyFileVariable: 'SSH_KEY',
-        //             usernameVariable: 'SSH_USERNAME'
-        //         )]) {
-        //             script {
-        //                 def fullImage = "${env.ECR_REPO_URL}:${params.ENVIRONMENT.toLowerCase()}-${env.BUILD_ID}"
-        //                 def containerName = "classof25-${params.ENVIRONMENT.toLowerCase()}"
-        //                 // Create .ssh directory in workspace
-        //                 sh "mkdir -p ${env.WORKSPACE}/.ssh"
-        //                 // Generate known_hosts file non-interactively
-        //                 def keyscanStatus = sh(script: """
-        //                     timeout 10s ssh-keyscan -t rsa,ecdsa,ed25519 -H ${env.EC2_IP} >> ${env.WORKSPACE}/.ssh/known_hosts
-        //                 """, returnStatus: true)
-        //                 if (keyscanStatus != 0) {
-        //                     error "Failed to fetch EC2 host key for ${env.EC2_IP}. Ensure the instance is reachable and SSH is enabled."
-        //                 }
-        //                 // Write SSH commands to a script
-        //                 writeFile file: 'deploy.sh', text: """
-        //                     #!/bin/bash
-        //                     set -e
-        //                     # Authenticate to ECR (instance profile handles permissions)
-        //                     aws ecr get-login-password --region ${params.AWS_REGION} | \
-        //                         docker login --username AWS --password-stdin ${params.AWS_ACCOUNT_ID}.dkr.ecr.${params.AWS_REGION}.amazonaws.com
-        //                     # Pull the new image
-        //                     docker pull ${fullImage}
-        //                     # Clean up previous images (keep the newly pulled image)
-        //                     docker images ${env.ECR_REPO_URL} --format '{{.Tag}}' | grep -v "${params.ENVIRONMENT.toLowerCase()}-${env.BUILD_ID}" | xargs -I {} docker rmi ${env.ECR_REPO_URL}:{} || true
-        //                     # Stop and remove existing container (if any)
-        //                     docker stop ${containerName} || true
-        //                     docker rm ${containerName} || true
-        //                     # Run the new container
-        //                     docker run -d --name ${containerName} -p ${params.HOST_PORT}:80 ${fullImage}
-        //                     # Prune unused containers
-        //                     docker system prune -f || true
-        //                 """
-        //                 // Copy and execute script on EC2
-        //                 sh """
-        //                     chmod 600 \$SSH_KEY
-        //                     scp -i \$SSH_KEY -o UserKnownHostsFile=${env.WORKSPACE}/.ssh/known_hosts deploy.sh ${params.EC2_SSH_USER}@${env.EC2_IP}:~/deploy.sh
-        //                     ssh -i \$SSH_KEY -o UserKnownHostsFile=${env.WORKSPACE}/.ssh/known_hosts ${params.EC2_SSH_USER}@${env.EC2_IP} 'chmod +x ~/deploy.sh && ~/deploy.sh'
-        //                     rm -f \$SSH_KEY
-        //                     rm -rf ${env.WORKSPACE}/.ssh
-        //                 """
-        //             }
-        //         }
-        //     }
-        // }
+        stage('Deploy to EC2') {
+            steps {
+                withCredentials([sshUserPrivateKey(
+                    credentialsId: 'docker-server-key',
+                    keyFileVariable: 'SSH_KEY',
+                    usernameVariable: 'SSH_USERNAME'
+                )]) {
+                    script {
+                        def fullImage = "${env.ECR_REPO_URL}:${params.ENVIRONMENT.toLowerCase()}-${env.BUILD_ID}"
+                        def containerName = "classof25-${params.ENVIRONMENT.toLowerCase()}"
+                        // Create .ssh directory in workspace
+                        sh "mkdir -p ${env.WORKSPACE}/.ssh"
+                        // Generate known_hosts file non-interactively
+                        def keyscanStatus = sh(script: """
+                            timeout 10s ssh-keyscan -t rsa,ecdsa,ed25519 -H ${env.EC2_IP} >> ${env.WORKSPACE}/.ssh/known_hosts
+                        """, returnStatus: true)
+                        if (keyscanStatus != 0) {
+                            error "Failed to fetch EC2 host key for ${env.EC2_IP}. Ensure the instance is reachable and SSH is enabled."
+                        }
+                        // Write SSH commands to a script
+                        writeFile file: 'deploy.sh', text: """
+                            #!/bin/bash
+                            set -e
+                            # Authenticate to ECR (instance profile handles permissions)
+                            aws ecr get-login-password --region ${params.AWS_REGION} | \
+                                docker login --username AWS --password-stdin ${params.AWS_ACCOUNT_ID}.dkr.ecr.${params.AWS_REGION}.amazonaws.com
+                            # Pull the new image
+                            docker pull ${fullImage}
+                            # Clean up previous images (keep the newly pulled image)
+                            docker images ${env.ECR_REPO_URL} --format '{{.Tag}}' | grep -v "${params.ENVIRONMENT.toLowerCase()}-${env.BUILD_ID}" | xargs -I {} docker rmi ${env.ECR_REPO_URL}:{} || true
+                            # Stop and remove existing container (if any)
+                            docker stop ${containerName} || true
+                            docker rm ${containerName} || true
+                            # Run the new container
+                            docker run -d --name ${containerName} -p ${params.HOST_PORT}:80 ${fullImage}
+                            # Prune unused containers
+                            docker system prune -f || true
+                        """
+                        // Copy and execute script on EC2
+                        sh """
+                            chmod 600 \$SSH_KEY
+                            scp -i \$SSH_KEY -o UserKnownHostsFile=${env.WORKSPACE}/.ssh/known_hosts deploy.sh ${params.EC2_SSH_USER}@${env.EC2_IP}:~/deploy.sh
+                            ssh -i \$SSH_KEY -o UserKnownHostsFile=${env.WORKSPACE}/.ssh/known_hosts ${params.EC2_SSH_USER}@${env.EC2_IP} 'chmod +x ~/deploy.sh && ~/deploy.sh'
+                            rm -f \$SSH_KEY
+                            rm -rf ${env.WORKSPACE}/.ssh
+                        """
+                    }
+                }
+            }
+        }
     }
     post {
         failure {
