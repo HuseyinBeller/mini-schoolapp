@@ -187,8 +187,10 @@ pipeline {
                     script {
                         def fullImage = "${env.ECR_REPO_URL}:${params.ENVIRONMENT.toLowerCase()}-${env.BUILD_ID}"
                         def containerName = "classof25-${params.ENVIRONMENT.toLowerCase()}"
-                        // Create .ssh directory in workspace!
+                        
+                        // Create .ssh directory in workspace
                         sh "mkdir -p ${env.WORKSPACE}/.ssh"
+                        
                         // Generate known_hosts file non-interactively
                         def keyscanStatus = sh(script: """
                             timeout 10s ssh-keyscan -t rsa,ecdsa,ed25519 -H ${env.EC2_IP} >> ${env.WORKSPACE}/.ssh/known_hosts
@@ -196,33 +198,97 @@ pipeline {
                         if (keyscanStatus != 0) {
                             error "Failed to fetch EC2 host key for ${env.EC2_IP}. Ensure the instance is reachable and SSH is enabled."
                         }
-                        // Write SSH commands to a script
-                        writeFile file: 'deploy.sh', text: """
-                            #!/bin/bash
-                            set -e
-                            # Authenticate to ECR (instance profile handles permissions)
-                            aws ecr get-login-password --region ${params.AWS_REGION} | \
-                                docker login --username AWS --password-stdin ${params.AWS_ACCOUNT_ID}.dkr.ecr.${params.AWS_REGION}.amazonaws.com
-                            # Pull the new image
-                            docker pull ${fullImage}
-                            # Clean up previous images (keep the newly pulled image)
-                            docker images ${env.ECR_REPO_URL} --format '{{.Tag}}' | grep -v "${params.ENVIRONMENT.toLowerCase()}-${env.BUILD_ID}" | xargs -I {} docker rmi ${env.ECR_REPO_URL}:{} || true
-                            # Stop and remove existing container (if any)
-                            docker stop ${containerName} || true
-                            docker rm ${containerName} || true
-                            # Run the new container
-                            docker run -d --name ${containerName} -p ${params.HOST_PORT}:80 ${fullImage}
-                            # Prune unused containers
-                            docker system prune -f || true
-                        """
-                        // Copy and execute script on EC2.
+                        
+                        // Write deployment script with AWS credentials passed as environment variables
+                        writeFile file: 'deploy.sh', text: """#!/bin/bash
+set -e
+
+echo "🚀 Starting deployment of ${fullImage}"
+
+# Export AWS credentials for this session
+export AWS_ACCESS_KEY_ID="${env.AWS_ACCESS_KEY_ID}"
+export AWS_SECRET_ACCESS_KEY="${env.AWS_SECRET_ACCESS_KEY}"
+export AWS_SESSION_TOKEN="${env.AWS_SESSION_TOKEN}"
+export AWS_DEFAULT_REGION="${params.AWS_REGION}"
+
+echo "🔐 Authenticating to ECR..."
+# Authenticate to ECR using the passed credentials
+aws ecr get-login-password --region ${params.AWS_REGION} | \\
+    docker login --username AWS --password-stdin ${params.AWS_ACCOUNT_ID}.dkr.ecr.${params.AWS_REGION}.amazonaws.com
+
+if [ \$? -ne 0 ]; then
+    echo "❌ Failed to authenticate to ECR"
+    exit 1
+fi
+
+echo "📥 Pulling new image..."
+docker pull ${fullImage}
+if [ \$? -ne 0 ]; then
+    echo "❌ Failed to pull image ${fullImage}"
+    exit 1
+fi
+
+echo "🛑 Stopping and removing existing container..."
+docker stop ${containerName} || true
+docker rm ${containerName} || true
+
+echo "🚀 Starting new container..."
+docker run -d --name ${containerName} \\
+    -p ${params.HOST_PORT}:80 \\
+    --restart unless-stopped \\
+    --label "environment=${params.ENVIRONMENT.toLowerCase()}" \\
+    --label "build-id=${env.BUILD_ID}" \\
+    ${fullImage}
+
+if [ \$? -ne 0 ]; then
+    echo "❌ Failed to start container"
+    exit 1
+fi
+
+# Wait for container to be ready
+echo "⏳ Waiting for container to be ready..."
+sleep 15
+
+# Check if container is running
+if ! docker ps | grep -q ${containerName}; then
+    echo "❌ Container is not running"
+    docker logs ${containerName}
+    exit 1
+fi
+
+echo "🧹 Cleaning up old images..."
+# Clean up old images (keep the newly pulled image and one previous)
+docker images ${env.ECR_REPO_URL} --format '{{.Tag}}' | \\
+    grep -E '^${params.ENVIRONMENT.toLowerCase()}-.*' | \\
+    sort -r | \\
+    tail -n +3 | \\
+    xargs -I {} docker rmi ${env.ECR_REPO_URL}:{} || true
+
+# Prune unused containers and images
+docker system prune -f || true
+
+echo "✅ Deployment completed successfully!"
+echo "Container: ${containerName}"
+echo "Image: ${fullImage}"
+echo "Port: ${params.HOST_PORT}"
+echo "Status: \$(docker inspect --format='{{.State.Status}}' ${containerName})"
+
+# Unset AWS credentials for security
+unset AWS_ACCESS_KEY_ID
+unset AWS_SECRET_ACCESS_KEY  
+unset AWS_SESSION_TOKEN
+"""
+                        
+                        // Copy and execute script on EC2
                         sh """
                             chmod 600 \$SSH_KEY
+                            chmod +x deploy.sh
                             scp -i \$SSH_KEY -o UserKnownHostsFile=${env.WORKSPACE}/.ssh/known_hosts deploy.sh ${params.EC2_SSH_USER}@${env.EC2_IP}:~/deploy.sh
                             ssh -i \$SSH_KEY -o UserKnownHostsFile=${env.WORKSPACE}/.ssh/known_hosts ${params.EC2_SSH_USER}@${env.EC2_IP} 'chmod +x ~/deploy.sh && ~/deploy.sh'
-                            rm -f \$SSH_KEY
                             rm -rf ${env.WORKSPACE}/.ssh
                         """
+                        
+                        echo "🎉 Deployment to EC2 completed successfully!"
                     }
                 }
             }
