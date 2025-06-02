@@ -1,0 +1,25 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "ecr:GetAuthorizationToken"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Effect": "Allow",
+            "Action": [
+                "ecr:BatchCheckLayerAvailability",
+                "ecr:GetDownloadUrlForLayer",
+                "ecr:BatchGetImage"
+            ],
+            "Resource": [
+                "arn:aws:ecr:eu-central-1:203918847014:repository/classof25repo-dev",
+                "arn:aws:ecr:eu-central-1:203918847014:repository/classof25repo-staging",
+                "arn:aws:ecr:eu-central-1:203918847014:repository/classof25repo-prod"
+            ]
+        }
+    ]
+} 
