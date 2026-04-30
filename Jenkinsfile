@@ -131,7 +131,7 @@ pipeline {
                     if (loginStatus != 0) {
                         error "Failed to authenticate to ECR. Check permissions for ecr:GetAuthorizationToken."
                     }
-                    // Tag and push image
+                    /// Tag and push image
                     sh """
                         docker tag classof25:${imageTag}-${env.BUILD_ID} ${fullImage}
                         docker push ${fullImage}
