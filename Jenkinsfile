@@ -82,37 +82,37 @@ pipeline {
                 }
             }
         }
-        // stage('Validate/Create ECR Repository') {
-        //     steps {
-        //         script {
-        //             def repoName = "${params.ECR_REPO_NAME}-${params.ENVIRONMENT.toLowerCase()}"
-        //             env.ECR_REPO_URL = "${params.AWS_ACCOUNT_ID}.dkr.ecr.${params.AWS_REGION}.amazonaws.com/${repoName}"
-        //             // Check if repository exists
-        //             def repoOutput = sh(script: """
-        //                 aws ecr describe-repositories \
-        //                     --region ${params.AWS_REGION} \
-        //                     --repository-names ${repoName} \
-        //                     --output json 2>/dev/null || echo '{}'
-        //             """, returnStdout: true).trim()
-        //             def repoJson = readJSON text: repoOutput
-        //             if (!repoJson.repositories || repoJson.repositories.size() == 0) {
-        //                 echo "ECR repository ${repoName} does not exist. Creating..."
-        //                 def createStatus = sh(script: """
-        //                     aws ecr create-repository \
-        //                         --region ${params.AWS_REGION} \
-        //                         --repository-name ${repoName} \
-        //                         --output json
-        //                 """, returnStatus: true)
-        //                 if (createStatus != 0) {
-        //                     error "Failed to create ECR repository ${repoName}. Check permissions or if it already exists."
-        //                 }
-        //                 echo "ECR repository ${repoName} created successfully."
-        //             } else {
-        //                 echo "ECR repository ${repoName} already exists."
-        //             }
-        //         }
-        //     }
-        // }
+        stage('Validate/Create ECR Repository') {
+            steps {
+                script {
+                    def repoName = "${params.ECR_REPO_NAME}-${params.ENVIRONMENT.toLowerCase()}"
+                    env.ECR_REPO_URL = "${params.AWS_ACCOUNT_ID}.dkr.ecr.${params.AWS_REGION}.amazonaws.com/${repoName}"
+                    // Check if repository exists
+                    def repoOutput = sh(script: """
+                        aws ecr describe-repositories \
+                            --region ${params.AWS_REGION} \
+                            --repository-names ${repoName} \
+                            --output json 2>/dev/null || echo '{}'
+                    """, returnStdout: true).trim()
+                    def repoJson = readJSON text: repoOutput
+                    if (!repoJson.repositories || repoJson.repositories.size() == 0) {
+                        echo "ECR repository ${repoName} does not exist. Creating..."
+                        def createStatus = sh(script: """
+                            aws ecr create-repository \
+                                --region ${params.AWS_REGION} \
+                                --repository-name ${repoName} \
+                                --output json
+                        """, returnStatus: true)
+                        if (createStatus != 0) {
+                            error "Failed to create ECR repository ${repoName}. Check permissions or if it already exists."
+                        } 
+                        echo "ECR repository ${repoName} created successfully."
+                    } else {
+                        echo "ECR repository ${repoName} already exists."
+                    }
+                }
+            }
+        }
         // stage('Build and Push Docker Image') {
         //     steps {
         //         script {
