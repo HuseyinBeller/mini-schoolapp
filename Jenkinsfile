@@ -113,32 +113,32 @@ pipeline {
                 }
             }
         }
-        // stage('Build and Push Docker Image') {
-        //     steps {
-        //         script {
-        //             def imageTag = params.ENVIRONMENT.toLowerCase()
-        //             def fullImage = "${env.ECR_REPO_URL}:${imageTag}-${env.BUILD_ID}"
-        //             // Build Docker image
-        //             sh "docker build -t classof25:${imageTag}-${env.BUILD_ID} ."
-        //             // Authenticate to ECR
-        //             def loginStatus = sh(script: """
-        //                 aws ecr get-login-password \
-        //                     --region ${params.AWS_REGION} | \
-        //                     docker login \
-        //                         --username AWS \
-        //                         --password-stdin ${params.AWS_ACCOUNT_ID}.dkr.ecr.${params.AWS_REGION}.amazonaws.com
-        //             """, returnStatus: true)
-        //             if (loginStatus != 0) {
-        //                 error "Failed to authenticate to ECR. Check permissions for ecr:GetAuthorizationToken."
-        //             }
-        //             // Tag and push image
-        //             sh """
-        //                 docker tag classof25:${imageTag}-${env.BUILD_ID} ${fullImage}
-        //                 docker push ${fullImage}
-        //             """
-        //         }
-        //     }
-        // }
+        stage('Build and Push Docker Image') {
+            steps {
+                script {
+                    def imageTag = params.ENVIRONMENT.toLowerCase()
+                    def fullImage = "${env.ECR_REPO_URL}:${imageTag}-${env.BUILD_ID}"
+                    // Build Docker image
+                    sh "docker build -t classof25:${imageTag}-${env.BUILD_ID} ."
+                    // Authenticate to ECR
+                    def loginStatus = sh(script: """
+                        aws ecr get-login-password \
+                            --region ${params.AWS_REGION} | \
+                            docker login \
+                                --username AWS \
+                                --password-stdin ${params.AWS_ACCOUNT_ID}.dkr.ecr.${params.AWS_REGION}.amazonaws.com
+                    """, returnStatus: true)
+                    if (loginStatus != 0) {
+                        error "Failed to authenticate to ECR. Check permissions for ecr:GetAuthorizationToken."
+                    }
+                    // Tag and push image
+                    sh """
+                        docker tag classof25:${imageTag}-${env.BUILD_ID} ${fullImage}
+                        docker push ${fullImage}
+                    """
+                }
+            }
+        }
         // stage('Validate EC2 Instance') {
         //     steps {
         //         script {
