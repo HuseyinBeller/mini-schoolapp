@@ -77,7 +77,7 @@ pipeline {
         stage('stsInitial02') {
             steps {
                 script {
-                    // Initialize AWS CLI with default region
+                    // Initialize AWS CLI with default region 
                     sh "aws sts get-caller-identity --output json"
                 }
             }
@@ -87,7 +87,7 @@ pipeline {
                 script {
                     def repoName = "${params.ECR_REPO_NAME}-${params.ENVIRONMENT.toLowerCase()}"
                     env.ECR_REPO_URL = "${params.AWS_ACCOUNT_ID}.dkr.ecr.${params.AWS_REGION}.amazonaws.com/${repoName}"
-                    // Check if repository exists
+                    /// Check if repository exists
                     def repoOutput = sh(script: """
                         aws ecr describe-repositories \
                             --region ${params.AWS_REGION} \
