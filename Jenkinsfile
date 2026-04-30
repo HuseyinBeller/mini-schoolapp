@@ -74,14 +74,14 @@ pipeline {
                 }
             }
         }
-        // stage('stsInitial02') {
-        //     steps {
-        //         script {
-        //             // Initialize AWS CLI with default region
-        //             sh "aws sts get-caller-identity --output json"
-        //         }
-        //     }
-        // }
+        stage('stsInitial02') {
+            steps {
+                script {
+                    // Initialize AWS CLI with default region
+                    sh "aws sts get-caller-identity --output json"
+                }
+            }
+        }
         // stage('Validate/Create ECR Repository') {
         //     steps {
         //         script {
